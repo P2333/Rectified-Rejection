@@ -15,7 +15,7 @@ The codes are modifed based on [Rice et al. 2020](https://github.com/locuslab/ro
 
 ## Running Commands
 
-### Training 
+### Training (PGD-AT + RR) 
 ```shell
 python train_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --attack pgd --lr-schedule piecewise \
                                               --epochs 110 --epsilon 8 \
@@ -30,3 +30,17 @@ python train_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --attack pgd
                                               --dataset 'CIFAR-10' \
                                               --SGconfidenceW
 ```
+
+### Evaluation
+The trained model is saved at `trained_models/model_path`, where the specific name of `model_path` is automatically generated.
+```shell
+python eval_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --evalset test --norm l_inf --epsilon 8 \
+                                              --attack-iters 1000 --pgd-alpha 2 \
+                                              --fname trained_models/model_path \
+                                              --load_epoch -1 --seed 2020 \
+                                              --dataset 'CIFAR-10' \
+                                              --twobranch --useBN \
+                                              --selfreweightCalibrate
+
+```
+
