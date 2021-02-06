@@ -125,7 +125,6 @@ def get_args():
     parser.add_argument('--selfreweightCalibrate', action='store_true') # Calibrate
     parser.add_argument('--RatioLoss', action='store_true')
     parser.add_argument('--reweight', action='store_true')
-    parser.add_argument('--lossversion', default='onehot', choices=['onehot', 'category'])
     parser.add_argument('--temp', default=1., type=float)
     parser.add_argument('--tempC', default=1., type=float)
     parser.add_argument('--tempC_trueonly', default=1., type=float) # stop gradient for the confidence term    
@@ -167,7 +166,7 @@ def get_auto_fname(args):
     if args.adaptivetrain:
         names += '_adaptiveT' + str(args.adaptivetrainlambda)
         if args.selfreweightCalibrate:
-            names += '_selfreweightCalibrate_' + args.lossversion + '_temp' + str(args.temp)
+            names += '_selfreweightCalibrate_temp' + str(args.temp)
             if args.tempC != 1.:
                 names += '_tempC' + str(args.tempC)
             if args.tempC_trueonly != 1.:
