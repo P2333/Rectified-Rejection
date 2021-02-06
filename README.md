@@ -13,9 +13,9 @@ This project is tested under the following environment settings:
 ## Acknowledgement
 The codes are modifed based on [Rice et al. 2020](https://github.com/locuslab/robust_overfitting), and the model architectures are implemented by [pytorch-cifar](https://github.com/kuangliu/pytorch-cifar).
 
-## Running Commands
+## Training Commands
 
-### Training (PGD-AT + RR) 
+### PGD-AT + RR
 ```shell
 python train_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --attack pgd --lr-schedule piecewise \
                                               --epochs 110 --epsilon 8 \
@@ -31,7 +31,9 @@ python train_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --attack pgd
                                               --SGconfidenceW
 ```
 
-### Evaluation
+## Evaluation Commands
+
+### Evaluate under the PGD attacks
 The trained model is saved at `trained_models/model_path`, where the specific name of `model_path` is automatically generated.
 ```shell
 python eval_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --evalset test --norm l_inf --epsilon 8 \
@@ -44,3 +46,15 @@ python eval_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --evalset tes
 
 ```
 
+### Evaluate under the adaptive CW attacks
+```shell
+python eval_cifar_CW.py --model_name PreActResNet18_twobranch_DenseV1 --evalset adaptiveCWtest \
+                                              --fname trained_models/model_path \
+                                              --load_epoch -1 --seed 2020 \
+                                              --binary_search_steps 9 --CW_iter 100 --CW_confidence 0 \
+                                              --threatmodel linf --reportmodel linf \
+                                              --twobranch --useBN \
+                                              --selfreweightCalibrate \
+                                              --detectmetric 'con' \
+                                              --dataset 'CIFAR-10'
+```
