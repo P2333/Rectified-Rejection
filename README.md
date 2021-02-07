@@ -68,7 +68,7 @@ The trained model is saved at `trained_models/model_path`, where the specific na
 python eval_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --evalset test --norm l_inf --epsilon 8 \
                                               --attack-iters 1000 --pgd-alpha 2 \
                                               --fname trained_models/model_path \
-                                              --load_epoch -1 --seed 2020 \
+                                              --load_epoch -1 \
                                               --dataset 'CIFAR-10' \
                                               --twobranch --useBN \
                                               --selfreweightCalibrate
@@ -79,7 +79,7 @@ The command for evaluating SelectiveNet is:
 python eval_cifar_SelectiveNet.py --model_name PreActResNet18_threebranch_DenseV1 --evalset test --norm l_inf --epsilon 8 \
                                               --attack-iters 10 --pgd-alpha 8 \
                                               --fname trained_models/model_path \
-                                              --load_epoch -1 --seed 2020 \
+                                              --load_epoch -1 \
                                               --dataset 'CIFAR-10' \
                                               --threebranch --useBN \
                                               --selfreweightSelectiveNet
