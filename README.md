@@ -14,8 +14,9 @@ This project is tested under the following environment settings:
 The codes are modifed based on [Rice et al. 2020](https://github.com/locuslab/robust_overfitting), and the model architectures are implemented by [pytorch-cifar](https://github.com/kuangliu/pytorch-cifar).
 
 ## Training Commands
+Below we provide running commands for a certain setting, where the FLAGS can be changed.
 
-### PGD-AT + RR
+### RR (OURS)
 ```shell
 python train_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --attack pgd --lr-schedule piecewise \
                                               --epochs 110 --epsilon 8 \
@@ -29,6 +30,35 @@ python train_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --attack pgd
                                               --temp 1.0 \
                                               --dataset 'CIFAR-10' \
                                               --SGconfidenceW
+```
+
+### SelectiveNet (Baseline)
+```shell
+python train_cifar_SelectiveNet.py --model_name PreActResNet18_threebranch_DenseV1 --attack pgd --lr-schedule piecewise \
+                                              --epochs 110 --epsilon 8 \
+                                              --attack-iters 10 --pgd-alpha 2 \
+                                              --fname auto \
+                                              --batch-size 128 \
+                                              --adaptivetrain --adaptivetrainlambda 1.0 \
+                                              --weight_decay 5e-4 \
+                                              --threebranch --useBN \
+                                              --selfreweightSelectiveNet \
+                                              --Lambda 16 --coverage 0.7 \
+                                              --dataset 'CIFAR-10'
+```
+
+### EBD (Baseline)
+```shell
+python train_cifar.py --model_name PreActResNet18 --attack pgd --lr-schedule piecewise \
+                                              --epochs 110 --epsilon 8 \
+                                              --attack-iters 10 --pgd-alpha 2 \
+                                              --fname auto \
+                                              --batch-size 128 \
+                                              --adaptivetrain --adaptivetrainlambda 0.1 \
+                                              --selfreweightNIPS20 \
+                                              --m_in 6 --m_out 3 \
+                                              --weight_decay 5e-4 \
+                                              --dataset 'CIFAR-10'
 ```
 
 ## Evaluation Commands
