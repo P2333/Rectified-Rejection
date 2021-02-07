@@ -27,7 +27,6 @@ python train_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --attack pgd
                                               --weight_decay 5e-4 \
                                               --twobranch --useBN \
                                               --selfreweightCalibrate \
-                                              --temp 1.0 \
                                               --dataset 'CIFAR-10' \
                                               --SGconfidenceW
 ```
@@ -64,7 +63,7 @@ python train_cifar.py --model_name PreActResNet18 --attack pgd --lr-schedule pie
 ## Evaluation Commands
 
 ### Evaluate under the PGD attacks
-The trained model is saved at `trained_models/model_path`, where the specific name of `model_path` is automatically generated.
+The trained model is saved at `trained_models/model_path`, where the specific name of `model_path` is automatically generated during training. The command for evaluating our RR method is:
 ```shell
 python eval_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --evalset test --norm l_inf --epsilon 8 \
                                               --attack-iters 1000 --pgd-alpha 2 \
@@ -75,6 +74,34 @@ python eval_cifar.py --model_name PreActResNet18_twobranch_DenseV1 --evalset tes
                                               --selfreweightCalibrate
 
 ```
+The command for evaluating SelectiveNet is:
+```shell
+python eval_cifar_SelectiveNet.py --model_name PreActResNet18_threebranch_DenseV1 --evalset test --norm l_inf --epsilon 8 \
+                                              --attack-iters 10 --pgd-alpha 8 \
+                                              --fname trained_models/model_path \
+                                              --load_epoch -1 --seed 2020 \
+                                              --dataset 'CIFAR-10' \
+                                              --threebranch --useBN \
+                                              --selfreweightSelectiveNet
+```
+The command for evaluating EBD is:
+```shell
+python eval_cifar.py --model_name PreActResNet18 --evalset test --norm l_inf --epsilon 8 \
+                                              --attack-iters 10 --pgd-alpha 2 --load_epoch -1 \
+                                              --fname trained_models/model_path \
+                                              --dataset 'CIFAR-10'
+```
+The command for evaluating statistic-based baselines is:
+```shell
+python eval_cifar_baselines.py --model_name PreActResNet18 --evalset test --norm l_inf --epsilon 8 \
+                                              --attack-iters 10 --pgd-alpha 2 \
+                                              --fname trained_models/model_path \
+                                              --load_epoch -1 \
+                                              --batch-size 128 \
+                                              --dataset 'CIFAR-10' \
+                                              --baselines KD
+```
+where the FLAG `baselines` could be one of `['KD', 'LID', 'GDA', 'GMM', 'GDAstar']`.
 
 ### Evaluate under the adaptive CW attacks
 ```shell
