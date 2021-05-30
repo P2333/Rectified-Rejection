@@ -10,23 +10,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data
 from torch.autograd import Variable
+from sklearn.metrics import roc_auc_score, f1_score, roc_curve
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
-from autoattack import AutoAttack
+#from autoattack import AutoAttack
+from gama_multitarget_attacks import GAMA_PGD, GAMA_FW, multitarget_attack
 import os
 
 from models import *
 from utils import *
 
-def CW_loss(x, y):
-    x_sorted, ind_sorted = x.sort(dim=1)
-    ind = (ind_sorted[:, -1] == y).float()
-    
-    loss_value = -(x[np.arange(x.shape[0]), y] - x_sorted[:, -2] * ind - x_sorted[:, -1] * (1. - ind))
-    return loss_value.mean()
+BCEcriterion = nn.BCELoss()
 
 def attack_pgd(model, X, y, epsilon, alpha, attack_iters, restarts=1, norm='l_inf',
-                twobranch=False, use_CWloss=False):
+                twobranch=False, use_CWloss=False, adaptive_BCE=0):
     max_loss = torch.zeros(y.shape[0]).cuda()
     max_delta = torch.zeros_like(X).cuda()
     norm_func = normalize
@@ -46,15 +43,19 @@ def attack_pgd(model, X, y, epsilon, alpha, attack_iters, restarts=1, norm='l_in
         delta.requires_grad = True
         for _ in range(attack_iters):
             if twobranch:
-                output = model(normalize(X + delta))[0]
+                output, evi = model(normalize(X + delta))
+                evi = evi.sigmoid().squeeze()
             else:
                 output = model(normalize(X + delta))
-            if use_CWloss:
-                loss = CW_loss(output, y)
-            else:
-                loss = F.cross_entropy(output, y)
-            loss.backward()
-            grad = delta.grad.detach()
+                evi = 1
+            output_s = torch.softmax(output, dim=1)
+            con_y = output_s[torch.tensor(range(X.size(0))), y].detach() # T-Con
+            con_pre = output_s.max(1)[0] # Con
+            RR_detector = con_pre * evi
+            loss = CW_loss(output, y) if use_CWloss else F.cross_entropy(output, y)
+            loss += adaptive_BCE * BCEcriterion(RR_detector, con_y)
+            #loss += adaptive_BCE * RR_detector.log().mean(dim=0)
+            grad = torch.autograd.grad(loss, delta)[0]
             if norm == "l_inf":
                 d = torch.clamp(delta + alpha * torch.sign(grad), min=-epsilon, max=epsilon)
             elif norm == "l_2":
@@ -63,7 +64,6 @@ def attack_pgd(model, X, y, epsilon, alpha, attack_iters, restarts=1, norm='l_in
                 d = (delta + scaled_g*alpha).view(delta.size(0),-1).renorm(p=2,dim=0,maxnorm=epsilon).view_as(delta)
             d = clamp(d, lower_limit - X, upper_limit - X)
             delta.data = d
-            delta.grad.zero_()
         if twobranch:
             all_loss = F.cross_entropy(model(normalize(X+delta))[0], y, reduction='none')
         else:
@@ -107,10 +107,18 @@ def get_args():
     parser.add_argument('--useBN', action='store_true')
     parser.add_argument('--along', action='store_true')
     parser.add_argument('--selfreweightCalibrate', action='store_true') # Calibrate
+    parser.add_argument('--selfreweightSelectiveNet', action='store_true')
+    parser.add_argument('--selfreweightATRO', action='store_true')
+    parser.add_argument('--selfreweightCARL', action='store_true') # CARL https://github.com/cassidylaidlaw/playing-it-safe
     parser.add_argument('--lossversion', default='onehot', choices=['onehot', 'category'])
     parser.add_argument('--tempC', default=1., type=float)
     parser.add_argument('--evalonAA', action='store_true')# evaluate on AutoAttack
     parser.add_argument('--evalonCWloss', action='store_true')# evaluate on PGD with CW loss
+    parser.add_argument('--evalonGAMA_FW', action='store_true')# evaluate on GAMA-FW
+    parser.add_argument('--evalonGAMA_PGD', action='store_true')# evaluate on GAMA-FW
+    parser.add_argument('--evalonMultitarget', action='store_true')# evaluate on GAMA-FW
+
+    parser.add_argument('--adaptive_BCE', default=0, type=float)
     return parser.parse_args()
 
 
@@ -137,10 +145,7 @@ def main():
     epsilon = (args.epsilon / 255.)
     pgd_alpha = (args.pgd_alpha / 255.)
 
-    useBN = True if args.useBN else False
-    along = True if args.along else False
-
-    if args.selfreweightCalibrate:
+    if args.selfreweightCalibrate or args.selfreweightSelectiveNet or args.selfreweightCARL or args.selfreweightATRO:
         along = True
         args.out_dim = 1
 
@@ -156,17 +161,15 @@ def main():
     if args.model_name == 'PreActResNet18':
         model = PreActResNet18(num_classes=num_cla)
     elif args.model_name == 'PreActResNet18_twobranch_DenseV1':
-        model = PreActResNet18_twobranch_DenseV1(num_classes=num_cla, out_dim=args.out_dim, use_BN=useBN, along=along)
-    elif args.model_name == 'PreActResNet18_twobranch_DenseV1Multi':
-        model = PreActResNet18_twobranch_DenseV1Multi(num_classes=num_cla, out_dim=args.out_dim, use_BN=useBN, along=along)
-    elif args.model_name == 'PreActResNet18_twobranch_DenseV2':
-        model = PreActResNet18_twobranch_DenseV2(num_classes=num_cla, out_dim=args.out_dim, use_BN=useBN, along=along)
+        model = PreActResNet18_twobranch_DenseV1(num_classes=num_cla, out_dim=args.out_dim, use_BN=args.useBN, along=along)
     elif args.model_name == 'WideResNet':
         model = WideResNet(34, num_cla, widen_factor=10, dropRate=0.0)
     elif args.model_name == 'WideResNet_twobranch_DenseV1':
-        model = WideResNet_twobranch_DenseV1(34, num_cla, widen_factor=10, dropRate=0.0, along=along, use_BN=useBN, out_dim=args.out_dim)
-    elif args.model_name == 'WideResNet_20':
-        model = WideResNet(34, num_cla, widen_factor=20, dropRate=0.0)
+        model = WideResNet_twobranch_DenseV1(34, num_cla, widen_factor=10, dropRate=0.0, along=along, use_BN=args.useBN, out_dim=args.out_dim)
+    elif args.model_name == 'PreActResNet18_threebranch_DenseV1':
+        model = PreActResNet18_threebranch_DenseV1(num_classes=num_cla, out_dim=args.out_dim, use_BN=args.useBN, along=along)
+    elif args.model_name == 'WideResNet_threebranch_DenseV1':
+        model = WideResNet_threebranch_DenseV1(34, num_cla, widen_factor=10, dropRate=0.0, use_BN=args.useBN, along=along, out_dim=args.out_dim)
     else:
         raise ValueError("Unknown model")
 
@@ -185,7 +188,6 @@ def main():
 
     model.eval()
 
-
     if args.twobranch:
         def normalize_model(x):
             return model(normalize(x))[0]
@@ -193,7 +195,7 @@ def main():
         def normalize_model(x):
             return model(normalize(x))
 
-    adversary_AA = AutoAttack(normalize_model, norm='Linf', eps=epsilon, version='standard', verbose=True)
+    #adversary_AA = AutoAttack(normalize_model, norm='Linf', eps=epsilon, version='standard', verbose=True)
 
     if args.evalset == 'test':
         test_batches = data.DataLoader(item, batch_size=128, shuffle=False, num_workers=4)
@@ -202,7 +204,7 @@ def main():
         test_classes_correct, test_classes_wrong = [], []
         test_classes_robust_correct, test_classes_robust_wrong = [], []
 
-         # record con
+        # record con
         test_con_correct, test_robust_con_correct = [], []
         test_con_wrong, test_robust_con_wrong = [], []
 
@@ -214,24 +216,46 @@ def main():
         test_truecon_correct, test_robust_truecon_correct = [], []
         test_truecon_wrong, test_robust_truecon_wrong = [], []
 
+
+        # record logits of classifier
+        test_robust_con_correct_LOGITS = torch.tensor([])
+        test_robust_con_wrong_LOGITS = torch.tensor([])
+
+        # record logits of rejector
+        test_robust_evi_correct_LOGITS = torch.tensor([])
+        test_robust_evi_wrong_LOGITS = torch.tensor([])
+
+
+        
+
         for i, (X, y) in enumerate(test_batches):
             X, y = X.cuda(), y.cuda()
 
             if args.evalonAA:
-                X_adv = adversary_AA.run_standard_evaluation(X, y, bs=128)
+                #X_adv = adversary_AA.run_standard_evaluation(X, y, bs=128)
+                pass
+
+            elif args.evalonGAMA_FW:
+                X_adv = GAMA_FW(model, X, y, eps=epsilon, twobranch=args.twobranch)
+
+            elif args.evalonGAMA_FW:
+                X_adv = GAMA_PGD(model, X, y, eps=epsilon, eps_iter=2*epsilon, twobranch=args.twobranch)
+
+            elif args.evalonMultitarget:
+                X_adv = multitarget_attack(model, X, y, epsilon, pgd_alpha, args.attack_iters, restarts=args.restarts, 
+                    norm='l_inf', twobranch=args.twobranch, num_cla=num_cla)
 
             else:
                 if args.target:
-                    y_target = sample_targetlabel(y, num_classes=10)
-                    delta = attack_pgd(model, X, y_target, epsilon, pgd_alpha, args.attack_iters, args.restarts, args.norm, target=True, twobranch=args.twobranch, use_CWloss=args.evalonCWloss)
+                    y_target = sample_targetlabel(y, num_classes=num_cla)
+                    delta = attack_pgd(model, X, y_target, epsilon, pgd_alpha, args.attack_iters, args.restarts, args.norm, target=True, twobranch=args.twobranch, use_CWloss=args.evalonCWloss, adaptive_BCE=args.adaptive_BCE)
                 else:
-                    delta = attack_pgd(model, X, y, epsilon, pgd_alpha, args.attack_iters, args.restarts, args.norm, twobranch=args.twobranch, use_CWloss=args.evalonCWloss)
-                delta = delta.detach()
-                X_adv = X + delta
+                    delta = attack_pgd(model, X, y, epsilon, pgd_alpha, args.attack_iters, args.restarts, args.norm, twobranch=args.twobranch, use_CWloss=args.evalonCWloss, adaptive_BCE=args.adaptive_BCE)
+                X_adv = X + delta.detach()
 
             if args.twobranch:
-                output, output_aux = model(normalize(X))
-                robust_output, robust_output_aux = model(normalize(torch.clamp(X_adv, min=lower_limit, max=upper_limit)))
+                output, output_aux = model(normalize(X))[0:2]
+                robust_output, robust_output_aux = model(normalize(torch.clamp(X_adv, min=lower_limit, max=upper_limit)))[0:2]
 
                 con_pre, _ = torch.softmax(output * args.tempC, dim=1).max(1) # predicted label and confidence
                 robust_con_pre, _ = torch.softmax(robust_output * args.tempC, dim=1).max(1) # predicted label and confidence
@@ -247,6 +271,22 @@ def main():
                     if args.AuxiliaryOnly:
                         test_evi_all = output_aux
                         test_robust_evi_all = robust_output_aux
+
+                elif args.selfreweightSelectiveNet:
+                    test_evi_all = output_aux.sigmoid().squeeze()
+                    test_robust_evi_all = robust_output_aux.sigmoid().squeeze()
+
+                elif args.selfreweightATRO:
+                    test_evi_all = output_aux.tanh().squeeze()
+                    test_robust_evi_all = robust_output_aux.tanh().squeeze() # bs x 1, Calibration function A \in [0,1]
+
+                elif args.selfreweightCARL:
+                    output_all = torch.cat((output, output_aux), dim=1) # bs x 11 or bs x 101
+                    ro_output_all = torch.cat((robust_output, robust_output_aux), dim=1) # bs x 11 or bs x 101
+                    softmax_output = F.softmax(output_all, dim=1)
+                    ro_softmax_output = F.softmax(ro_output_all, dim=1)
+                    test_evi_all = softmax_output[torch.tensor(range(X.size(0))), -1]
+                    test_robust_evi_all = ro_softmax_output[torch.tensor(range(X.size(0))), -1]
             
             else:
                 output = model(normalize(X))
@@ -255,11 +295,11 @@ def main():
                 test_robust_evi_all = robust_output.logsumexp(dim=1)
 
 
-            output_s = F.softmax(output, dim=1)
+            output_s = F.softmax(output * args.tempC, dim=1)
             out_con, out_pre = output_s.max(1)
             out_truecon = output_s[torch.tensor(range(X.size(0))), y]
 
-            ro_output_s = F.softmax(robust_output, dim=1)
+            ro_output_s = F.softmax(robust_output * args.tempC, dim=1)
             ro_out_con, ro_out_pre = ro_output_s.max(1)
             ro_out_truecon = ro_output_s[torch.tensor(range(X.size(0))), y]
 
@@ -301,10 +341,10 @@ def main():
 
             print('Finish ', i)
 
-        np.savetxt('eval_results/test_classes_correct.txt', np.array(test_classes_correct))
-        np.savetxt('eval_results/test_classes_wrong.txt', np.array(test_classes_wrong))
-        np.savetxt('eval_results/test_classes_robust_correct.txt', np.array(test_classes_robust_correct))
-        np.savetxt('eval_results/test_classes_robust_wrong.txt', np.array(test_classes_robust_wrong))
+        np.savetxt('eval_results' + str(args.tempC) + '/test_classes_correct.txt', np.array(test_classes_correct))
+        np.savetxt('eval_results' + str(args.tempC) + '/test_classes_wrong.txt', np.array(test_classes_wrong))
+        np.savetxt('eval_results' + str(args.tempC) + '/test_classes_robust_correct.txt', np.array(test_classes_robust_correct))
+        np.savetxt('eval_results' + str(args.tempC) + '/test_classes_robust_wrong.txt', np.array(test_classes_robust_wrong))
 
         # confidence
         test_con_correct = torch.tensor(test_con_correct)
@@ -356,15 +396,15 @@ def main():
         logger.info('TPR 95 clean acc: %.4f; 99 clean acc: %.4f | TPR 95 robust acc: %.4f; 99 robust acc: %.4f', 
             acc95 - test_acc, acc99 - test_acc, ro_acc95 - test_robust_acc, ro_acc99 - test_robust_acc)
         
-        np.savetxt('eval_results/test_robust_con_correct.txt', test_robust_con_correct.cpu().numpy())
-        np.savetxt('eval_results/test_robust_con_wrong.txt', test_robust_con_wrong.cpu().numpy())
-        np.savetxt('eval_results/test_con_correct.txt', test_con_correct.cpu().numpy())
-        np.savetxt('eval_results/test_con_wrong.txt', test_con_wrong.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_robust_con_correct.txt', test_robust_con_correct.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_robust_con_wrong.txt', test_robust_con_wrong.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_con_correct.txt', test_con_correct.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_con_wrong.txt', test_con_wrong.cpu().numpy())
 
-        np.savetxt('eval_results/test_robust_truecon_correct.txt', test_robust_truecon_correct.cpu().numpy())
-        np.savetxt('eval_results/test_robust_truecon_wrong.txt', test_robust_truecon_wrong.cpu().numpy())
-        np.savetxt('eval_results/test_truecon_correct.txt', test_truecon_correct.cpu().numpy())
-        np.savetxt('eval_results/test_truecon_wrong.txt', test_truecon_wrong.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_robust_truecon_correct.txt', test_robust_truecon_correct.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_robust_truecon_wrong.txt', test_robust_truecon_wrong.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_truecon_correct.txt', test_truecon_correct.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_truecon_wrong.txt', test_truecon_wrong.cpu().numpy())
 
         
         print('')
@@ -379,12 +419,26 @@ def main():
             clean_clean, robust_robust)
         logger.info('TPR 95 clean acc: %.4f; 99 clean acc: %.4f | TPR 95 robust acc: %.4f; 99 robust acc: %.4f', 
             acc95 - test_acc, acc99 - test_acc, ro_acc95 - test_robust_acc, ro_acc99 - test_robust_acc)
+        # logger.info('TPR 95 clean acc improve: %.4f | TPR 95 robust acc improve: %.4f', 
+        #     acc - test_acc, ro_acc - test_robust_acc)
         
-        
-        np.savetxt('eval_results/test_robust_evi_correct.txt', test_robust_evi_correct.cpu().numpy())
-        np.savetxt('eval_results/test_robust_evi_wrong.txt', test_robust_evi_wrong.cpu().numpy())
-        np.savetxt('eval_results/test_evi_correct.txt', test_evi_correct.cpu().numpy())
-        np.savetxt('eval_results/test_evi_wrong.txt', test_evi_wrong.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_robust_evi_correct.txt', test_robust_evi_correct.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_robust_evi_wrong.txt', test_robust_evi_wrong.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_evi_correct.txt', test_evi_correct.cpu().numpy())
+        np.savetxt('eval_results' + str(args.tempC) + '/test_evi_wrong.txt', test_evi_wrong.cpu().numpy())
+
+        # print('')
+        # print('### ROC-AUC scores (truecon) ###')
+        # clean_clean = calculate_auc_scores(test_truecon_correct, test_truecon_wrong)
+        # _, acc95 = calculate_FPR_TPR(test_truecon_correct, test_truecon_wrong, tpr_ref=0.95)
+        # _, acc99 = calculate_FPR_TPR(test_truecon_correct, test_truecon_wrong, tpr_ref=0.99)
+        # robust_robust = calculate_auc_scores(test_robust_truecon_correct, test_robust_truecon_wrong)
+        # _, ro_acc95 = calculate_FPR_TPR(test_robust_truecon_correct, test_robust_truecon_wrong, tpr_ref=0.95)
+        # _, ro_acc99 = calculate_FPR_TPR(test_robust_truecon_correct, test_robust_truecon_wrong, tpr_ref=0.99)
+        # logger.info('clean_clean: %.3f | robust_robust: %.3f', 
+        #     clean_clean, robust_robust)
+        # logger.info('TPR 95 clean acc: %.4f; 99 clean acc: %.4f | TPR 95 robust acc: %.4f; 99 robust acc: %.4f', 
+        #     acc95 - test_acc, acc99 - test_acc, ro_acc95 - test_robust_acc, ro_acc99 - test_robust_acc)
 
 if __name__ == "__main__":
     main()

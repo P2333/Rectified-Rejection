@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data
 from torch.autograd import Variable
+from sklearn.metrics import roc_auc_score, f1_score, roc_curve
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
@@ -55,6 +56,43 @@ def attack_pgd(model, X, y, epsilon, alpha, attack_iters, restarts=1, norm='l_in
         max_delta[all_loss >= max_loss] = delta.detach()[all_loss >= max_loss]
         max_loss = torch.max(max_loss, all_loss)
     return max_delta
+
+def compute_tempT(model, data_batches, num_samples=50000):
+    print('Computing temperature T')
+    logits = torch.tensor([]).cuda() # num_samples x 10
+    logits_original = torch.tensor([]).cuda() # num_samples x 10
+    logits_temp = torch.tensor([]).cuda() # num_samples x 10
+    labels = torch.tensor([], dtype=torch.int64).cuda() # num_samples
+    for i, (X, y) in enumerate(data_batches):
+        X, y = X.cuda(), y.cuda()
+        output, _ = model(normalize(X)) # features: 128 x 512
+        logits = torch.cat((logits, output.detach()), dim=0)
+        labels = torch.cat((labels, y), dim=0)
+    print('Finished! Now test on T')
+    T = range(15)
+    for t in T:
+        t = (2**t) * 1e-4
+        print('Temp: ', t)
+        ro_output_s = F.softmax(logits / t, dim=1)
+        true_con = ro_output_s[torch.tensor(range(num_samples)), labels]
+        print('Expected clean accuracy: ', true_con.mean())
+        for i, (X, y) in enumerate(data_batches):
+            X, y = X.cuda(), y.cuda()
+            delta_original = attack_pgd(model, X, y, 8/255., 2/255., 10, 1, 'l_inf')    
+            #delta_temp = attack_pgd(model, X, y, 8/255., 2/255., 10, 1, 'l_inf', temp=t)
+            delta_original = delta_original.detach()
+            #delta_temp = delta_temp.detach()
+            ro_output_original, _ = model(normalize(torch.clamp(X + delta_original, min=0, max=1)))
+            #ro_output_temp, _ = model(normalize(torch.clamp(X + delta_temp, min=0, max=1)))
+            logits_original = torch.cat((logits_original, ro_output_original.detach()), dim=0)
+            #logits_temp = torch.cat((logits_temp, ro_output_temp.detach()), dim=0)
+        ro_output_original = F.softmax(logits_original / t, dim=1)
+        #ro_output_temp = F.softmax(logits_temp / t, dim=1)
+        true_con_original = ro_output_original[torch.tensor(range(num_samples)), labels]
+        #true_con_temp = ro_output_temp[torch.tensor(range(num_samples)), labels]
+        print('Expected robust accuracy (ori): ', true_con_original.mean())
+        #print('Expected robust accuracy (temp): ', true_con_temp.mean())
+    return 0
 
 def Kernel_density_train(model, train_batches, feature_dim=512, dataset='CIFAR-10'):
     print('Crafting kernel density points on training set')
@@ -220,6 +258,134 @@ def compute_features_tsne(model, train_batches):
     print('Finished!')
     return 0
 
+def calculate_auc_scores(correct, wrong):
+    labels_all = torch.cat((torch.ones_like(correct), torch.zeros_like(wrong)), dim=0).cpu().numpy()
+    prediction_all = torch.cat((correct, wrong), dim=0).cpu().numpy()
+    return roc_auc_score(labels_all, prediction_all)
+
+def calculate_FPR_TPR(correct, wrong, tpr_ref=0.95):
+    labels_all = torch.cat((torch.ones_like(correct), torch.zeros_like(wrong)), dim=0).cpu().numpy()
+    prediction_all = torch.cat((correct, wrong), dim=0).cpu().numpy()
+    fpr, tpr, thresholds = roc_curve(labels_all, prediction_all)
+    index = np.argmin(np.abs(tpr - tpr_ref))
+    T = thresholds[index]
+    FPR_thred = fpr[index]
+    index_c = (torch.where(correct > T)[0]).size(0)
+    index_w = (torch.where(wrong > T)[0]).size(0)
+    acc = index_c / (index_c + index_w + 1e-10)
+    return FPR_thred, acc
+
+def compute_tempT_Con_and_TCon(model, data_batches):
+    output_all = torch.tensor([]).cuda()
+    robust_output_all = torch.tensor([]).cuda()
+    labels_all = torch.tensor([], dtype=torch.int64).cuda()
+    for i, (X, y) in enumerate(data_batches):
+        print(i)
+        X, y = X.cuda(), y.cuda()
+        delta = attack_pgd(model, X, y, 8/255., 2/255., 10, 1, 'l_inf')    
+        delta = delta.detach()
+        output, _ = model(normalize(X)) # features: 128 x 512
+        robust_output, _ = model(normalize(torch.clamp(X + delta, min=lower_limit, max=upper_limit)))
+        output_all = torch.cat((output_all, output.detach()), dim=0)
+        robust_output_all = torch.cat((robust_output_all, robust_output.detach()), dim=0)
+        labels_all = torch.cat((labels_all, y), dim=0)
+    print('Finished! Now test on T')
+    num_samples = labels_all.size(0)
+
+    labels = torch.where(output_all.max(1)[1] == labels_all)[0]
+    ro_labels = torch.where(robust_output_all.max(1)[1] == labels_all)[0]
+    print('Clean Acc: ', labels.size(0))
+    print('PGD-10 Acc: ', ro_labels.size(0))
+
+    # clean data
+    TPR95_con_acc = []
+    TPR95_truecon_acc = []
+    con_mean_C = []
+    con_std_C = []
+    con_mean_W = []
+    con_std_W = []
+    truecon_mean_C = []
+    truecon_std_C = []
+    truecon_mean_W = []
+    truecon_std_W = []
+
+    # PGD-10 data
+    ro_TPR95_con_acc = []
+    ro_TPR95_truecon_acc = []
+    ro_con_mean_C = []
+    ro_con_std_C = []
+    ro_con_mean_W = []
+    ro_con_std_W = []
+    ro_truecon_mean_C = []
+    ro_truecon_std_C = []
+    ro_truecon_mean_W = []
+    ro_truecon_std_W = []
+
+    T = range(21)
+    for t in T:
+        t = 2**(t-10)
+        print('Temp: ', t)
+
+        # clean data
+        output_s = F.softmax(output_all / t, dim=1)
+        con, pre_label = output_s.max(1)
+        true_con = output_s[torch.tensor(range(num_samples)), labels_all]
+        labels = torch.where(pre_label == labels_all)[0]
+        labels_n = torch.where(pre_label != labels_all)[0]
+        con_C = con[labels]
+        con_W = con[labels_n]
+        true_con_C = true_con[labels]
+        true_con_W = true_con[labels_n]
+        _, acc95_con = calculate_FPR_TPR(con_C, con_W, tpr_ref=0.95)
+        _, acc95_truecon = calculate_FPR_TPR(true_con_C, true_con_W, tpr_ref=0.95)
+        print('### clean ###')
+        print('TPR-95 Acc (Con): ', acc95_con)
+        print('TPR-95 Acc (T-Con): ', acc95_truecon)
+        TPR95_con_acc += [acc95_con]
+        TPR95_truecon_acc += [acc95_truecon]
+        con_mean_C += [torch.mean(con_C).cpu().item()]
+        con_std_C += [torch.std(con_C).cpu().item()]
+        con_mean_W += [torch.mean(con_W).cpu().item()]
+        con_std_W += [torch.std(con_W).cpu().item()]
+        truecon_mean_C += [torch.mean(true_con_C).cpu().item()]
+        truecon_std_C += [torch.std(true_con_C).cpu().item()]
+        truecon_mean_W += [torch.mean(true_con_W).cpu().item()]
+        truecon_std_W += [torch.std(true_con_W).cpu().item()]
+    
+        
+        # PGD-10 data
+        ro_output_s = F.softmax(robust_output_all / t, dim=1)
+        ro_con, ro_pre_label = ro_output_s.max(1)
+        ro_true_con = ro_output_s[torch.tensor(range(num_samples)), labels_all]
+        ro_labels = torch.where(ro_pre_label == labels_all)[0]
+        ro_labels_n = torch.where(ro_pre_label != labels_all)[0]
+        ro_con_C = ro_con[ro_labels]
+        ro_con_W = ro_con[ro_labels_n]
+        ro_true_con_C = ro_true_con[ro_labels]
+        ro_true_con_W = ro_true_con[ro_labels_n]
+        _, ro_acc95_con = calculate_FPR_TPR(ro_con_C, ro_con_W, tpr_ref=0.95)
+        _, ro_acc95_truecon = calculate_FPR_TPR(ro_true_con_C, ro_true_con_W, tpr_ref=0.95)
+        print('### PGD-10 ###')
+        print('TPR-95 Acc (Con): ', ro_acc95_con)
+        print('TPR-95 Acc (T-Con): ', ro_acc95_truecon)
+        ro_TPR95_con_acc += [ro_acc95_con]
+        ro_TPR95_truecon_acc += [ro_acc95_truecon]
+        ro_con_mean_C += [torch.mean(ro_con_C).cpu().item()]
+        ro_con_std_C += [torch.std(ro_con_C).cpu().item()]
+        ro_con_mean_W += [torch.mean(ro_con_W).cpu().item()]
+        ro_con_std_W += [torch.std(ro_con_W).cpu().item()]
+        ro_truecon_mean_C += [torch.mean(ro_true_con_C).cpu().item()]
+        ro_truecon_std_C += [torch.std(ro_true_con_C).cpu().item()]
+        ro_truecon_mean_W += [torch.mean(ro_true_con_W).cpu().item()]
+        ro_truecon_std_W += [torch.std(ro_true_con_W).cpu().item()]   
+    clean_all = [TPR95_con_acc, TPR95_truecon_acc, con_mean_C, con_std_C, 
+    con_mean_W, con_std_W, truecon_mean_C, truecon_std_C, truecon_mean_W, truecon_std_W]
+    PGD_all = [ro_TPR95_con_acc, ro_TPR95_truecon_acc, ro_con_mean_C, ro_con_std_C, 
+    ro_con_mean_W, ro_con_std_W, ro_truecon_mean_C, ro_truecon_std_C, ro_truecon_mean_W, ro_truecon_std_W]
+    np.savetxt('eval_results_TempScale/clean_all.txt', np.array(clean_all))
+    np.savetxt('eval_results_TempScale/PGD_all.txt', np.array(PGD_all))  
+    return 0
+
 def get_args():
     parser = argparse.ArgumentParser()
     #parser.add_argument('--model', default='PreActResNet18')
@@ -247,6 +413,7 @@ def get_args():
     # two branch
     parser.add_argument('--twobranch', action='store_true')
     
+
     # baselines
     parser.add_argument('--baselines', default='KD', choices=['KD', 'LID', 'GDA', 'GMM', 'GDAstar'])
     return parser.parse_args()
@@ -296,6 +463,8 @@ def main():
     elif args.model_name == 'WideResNet':
         model = WideResNet(34, num_cla, widen_factor=10, dropRate=0.0, return_out=True)
         fea_dim = 640
+    # elif args.model_name == 'WideResNet_20':
+    #     model = WideResNet(34, 10, widen_factor=20, dropRate=0.0)
     else:
         raise ValueError("Unknown model")
 
@@ -313,12 +482,21 @@ def main():
         model.load_state_dict(model_dict)
 
     model.eval()
-      
+    
+    
     train_batches = data.DataLoader(item_train, batch_size=128, shuffle=False, num_workers=4)
     test_batches = data.DataLoader(item_test, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
+
+
+    #compute_tempT(model, test_batches, num_samples=10000)
+
+    compute_tempT_Con_and_TCon(model, test_batches)
+
+    #compute_features_tsne(model, train_batches)
+
     # eval on test set (adversarial examples)
-    if True:  
+    if False:  
         test_acc, test_robust_acc, test_n = 0, 0, 0
         test_classes_correct, test_classes_wrong = [], []
         test_classes_robust_correct, test_classes_robust_wrong = [], []
@@ -349,6 +527,8 @@ def main():
             mu, sigma = GMM_train(model, train_batches, feature_dim=fea_dim, dataset=args.dataset) # mu: 10 x 512, sigma: 10 x 512 x 512
             mu = mu.unsqueeze(dim=0) # 1 x 10 x 512
             sigma = torch.inverse(sigma.unsqueeze(dim=0)) # 1 x 10 x 512 x 512
+
+
 
         for i, (X, y) in enumerate(test_batches):
             X, y = X.cuda(), y.cuda()
@@ -420,6 +600,9 @@ def main():
                 ro_score_v = - mm(mm(ro_mean_v, ro_covariance), ro_mean_v.transpose(-2, -1)) # 128 x 10
                 test_evi_all = score_v.squeeze()
                 test_robust_evi_all = ro_score_v.squeeze()
+
+
+
         
             # output labels
             labels = torch.where(out_pre == y)[0]
@@ -453,6 +636,8 @@ def main():
 
             print('Finish ', i)
 
+        
+
         # confidence
         test_con_correct = torch.tensor(test_con_correct)
         test_robust_con_correct = torch.tensor(test_robust_con_correct)
@@ -483,6 +668,7 @@ def main():
             test_robust_evi_correct.mean().item(), test_robust_evi_correct.std().item(),
             test_robust_evi_wrong.mean().item(), test_robust_evi_wrong.std().item())
 
+
         print('')
         print('### ROC-AUC scores (confidence) ###')
         clean_clean = calculate_auc_scores(test_con_correct, test_con_wrong)
@@ -493,7 +679,8 @@ def main():
             clean_clean, robust_robust)
         logger.info('TPR 95 clean acc improve: %.4f | TPR 95 robust acc improve: %.4f', 
             acc - test_acc, ro_acc - test_robust_acc)
-               
+        
+        
         print('')
         print('### ROC-AUC scores (evidence) ###')
         clean_clean = calculate_auc_scores(test_evi_correct, test_evi_wrong)
@@ -504,6 +691,9 @@ def main():
             clean_clean, robust_robust)
         logger.info('TPR 95 clean acc improve: %.4f | TPR 95 robust acc improve: %.4f', 
             acc - test_acc, ro_acc - test_robust_acc)
+
+        
+        
 
 if __name__ == "__main__":
     main()

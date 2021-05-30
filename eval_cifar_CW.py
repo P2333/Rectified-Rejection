@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data
 from torch.autograd import Variable
+from sklearn.metrics import roc_auc_score, f1_score, roc_curve
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
@@ -21,6 +22,33 @@ from utils import *
 from adaptiveCWattack.carlini_wagner import CarliniWagnerL2Attack, CarliniWagnerLinfAttack
 from adaptiveCWattack.carlini_wagner import CarliniWagnerL2Attack_twobranch, CarliniWagnerLinfAttack_twobranch
 
+# def class_model(model):
+#     def pick0(*args, **kwargs):
+#         return model(*args, **kwargs)[0]
+#     return pick0
+
+# def evi_model(model):
+#     def pick1(*args, **kwargs):
+#         return model(*args, **kwargs)[1]
+#     return pick1
+
+
+def calculate_auc_scores(correct, wrong):
+    labels_all = torch.cat((torch.ones_like(correct), torch.zeros_like(wrong)), dim=0).cpu().numpy()
+    prediction_all = torch.cat((correct, wrong), dim=0).cpu().numpy()
+    return roc_auc_score(labels_all, prediction_all)
+
+def calculate_FPR_TPR(correct, wrong, tpr_ref=0.95):
+    labels_all = torch.cat((torch.ones_like(correct), torch.zeros_like(wrong)), dim=0).cpu().numpy()
+    prediction_all = torch.cat((correct, wrong), dim=0).cpu().numpy()
+    fpr, tpr, thresholds = roc_curve(labels_all, prediction_all)
+    index = np.argmin(np.abs(tpr - tpr_ref))
+    T = thresholds[index]
+    FPR_thred = fpr[index]
+    index_c = (torch.where(correct > T)[0]).size(0)
+    index_w = (torch.where(wrong > T)[0]).size(0)
+    acc = index_c / (index_c + index_w)
+    return FPR_thred, acc
 
 def calculate_RR_train_median(model, train_batches, args):
     record_train_evi = torch.tensor([]).cuda()
@@ -154,6 +182,7 @@ def get_args():
     parser.add_argument('--useBN', action='store_true')
     parser.add_argument('--along', action='store_true')
     parser.add_argument('--selfreweightCalibrate', action='store_true') # Calibrate
+    parser.add_argument('--lossversion', default='onehot', choices=['onehot', 'category'])
     parser.add_argument('--selfreweightSelectiveNet', action='store_true')
 
     return parser.parse_args()
@@ -234,7 +263,7 @@ def main():
 
     if args.model_name == 'PreActResNet18_threebranch_DenseV1':
         def two_branch_model(x, m=model):
-            return m(x)[:-1]
+                return m(x)[:-1]
         model = two_branch_model
 
     if args.evalset == 'adaptiveCWtest':

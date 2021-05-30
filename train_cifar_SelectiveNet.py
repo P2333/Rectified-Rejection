@@ -13,6 +13,13 @@ from torch.autograd import Variable
 import os
 from models import *
 from utils import *
+from sklearn.metrics import roc_auc_score
+
+def calculate_auc_scores(correct, wrong):
+    labels_all = torch.cat((torch.ones_like(correct), torch.zeros_like(wrong)), dim=0).cpu().numpy()
+    prediction_all = torch.cat((correct, wrong), dim=0).cpu().numpy()
+    return roc_auc_score(labels_all, prediction_all)
+
 
 def attack_pgd(model, X, y, epsilon, alpha, attack_iters, restarts, norm, BNeval=False,
                 threebranch=False):
@@ -115,6 +122,9 @@ def get_args():
 
     parser.add_argument('--warmup', default='none', choices=['none', 'gradually','distinct'])
     parser.add_argument('--warmupepoch', default=30, type=int)
+    
+
+
     
     return parser.parse_args()
 
