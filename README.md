@@ -1,6 +1,6 @@
 # Adversarial Training with Rectified Rejection
 
-The code for the paper 'Bypassing the Bottleneck of Adversarial Training by Rectified Rejection', submitted to ICML 2021 (ID 3386)
+The code for the paper 'Adversarial Training by Rectified Rejection', submitted to NeurIPS 2021 (ID 4182)
 
 ## Environment settings and libraries we used in our experiments
 
