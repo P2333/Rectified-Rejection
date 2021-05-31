@@ -1,6 +1,6 @@
 # Adversarial Training with Rectified Rejection
 
-The code for the paper 'Adversarial Training with Rectified Rejection', submitted to NeurIPS 2021 (ID 4182)
+The code for the paper [Adversarial Training with Rectified Rejection](https://github.com/P2333/Rectified-Rejection)
 
 ## Environment settings and libraries we used in our experiments
 
