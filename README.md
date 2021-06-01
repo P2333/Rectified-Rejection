@@ -1,6 +1,6 @@
 # Adversarial Training with Rectified Rejection
 
-The code for the paper [Adversarial Training with Rectified Rejection](https://github.com/P2333/Rectified-Rejection)
+The code for the paper [Adversarial Training with Rectified Rejection](https://arxiv.org/abs/2105.14785).
 
 ## Environment settings and libraries we used in our experiments
 
