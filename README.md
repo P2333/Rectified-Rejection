@@ -1,6 +1,6 @@
 # Adversarial Training with Rectified Rejection
 
-The code for the paper [Adversarial Training with Rectified Rejection](https://arxiv.org/abs/2105.14785).
+The code for the paper [Two Coupled Rejection Metrics Can Tell Adversarial Examples Apart](https://arxiv.org/abs/2105.14785).
 
 ## Environment settings and libraries we used in our experiments
 
