@@ -1,4 +1,4 @@
-# Adversarial Training with Rectified Rejection
+# Two Coupled Rejection Metrics Can Tell Adversarial Examples Apart
 
 The code for the paper [Two Coupled Rejection Metrics Can Tell Adversarial Examples Apart](https://arxiv.org/abs/2105.14785).
 
